@@ -25,6 +25,12 @@ import requests
 import hashlib
 from Crypto.Cipher import AES
 
+class SnaphaxException(Exception):
+    pass
+
+class SnaphaxAuthException(SnaphaxException):
+    pass
+
 class Snaphax(object):
     DEFAULT_OPTIONS = {
 		'blob_enc_key' : 'M02cnQ51Ji97vwT4',
@@ -36,14 +42,57 @@ class Snaphax(object):
 		'user_agent' : 'Snaphax 4.0.1 (iPad; iPhone OS 6.0; en_US)',
         'username' : ''
     }
+    STATUS_NONE = -1
+    STATUS_SENT = 0
     STATUS_NEW = 1
+    STATUS_VIEWED = 2
+    STATUS_SCREENSHOT = 3
+
     MEDIA_IMAGE = 0
     MEDIA_VIDEO = 1
+    MEDIA_VIDEO_NOAUDIO = 2
+    FRIEND_REQ = 3
+    FRIEND_REQ_IMAGE = 4
+    FRIEND_REQ_VIDEO = 5
+    FRIEND_REQ_VIDEO_NOAUDIO = 6
 
-    def __init__(self, **kwargs):
+    PORTRAIT = 0
+    LANDSCAPE_LEFT = 1
+    LANDSCAPE_RIGHT = 2
+
+    FRIEND = 0
+    FRIEND_PENDING = 1
+    FRIEND_BLOCKED = 2
+
+    status = {STATUS_NONE: "(none)",
+              STATUS_SENT: "Sent",
+              STATUS_NEW: "New",
+              STATUS_VIEWED: "Viewed",
+              STATUS_SCREENSHOT: "Screenshot" }
+
+    media = {MEDIA_IMAGE: "Image",
+             MEDIA_VIDEO: "Video (audio)",
+             MEDIA_VIDEO_NOAUDIO: "Video (no audio)",
+             FRIEND_REQ: "Friend Request",
+             FRIEND_REQ_IMAGE: "Friend Request (Image)",
+             FRIEND_REQ_VIDEO: "Friend Request (Video + audio)",
+             FRIEND_REQ_VIDEO_NOAUDIO: "Friend Request (Video, no audio)" }
+
+    orientation = {PORTRAIT: "Portrait",
+                   LANDSCAPE_LEFT: "Landscape (left)",
+                   LANDSCAPE_RIGHT: "Landscape (right)" }
+
+    friend = {FRIEND: "Friend",
+              FRIEND_PENDING: "Pending",
+              FRIEND_BLOCKED: "Blocked" }
+
+    def __init__(self, debug=True, **kwargs):
         self.options = self.DEFAULT_OPTIONS.copy()
         self.options.update(kwargs)
         self.auth_token = None
+        self.logger = None
+        self.debug = debug
+
     def login(self, username, password):
         ts = self._time()
         self.options["username"] = username
@@ -53,14 +102,14 @@ class Snaphax(object):
         out = self.post("/ph/login", post_data, self.options["static_token"], ts);
         try:
             json = out.json()
-        except:
-            return False
+        except requests.JSONDecodeError:
+            raise SnaphaxException("Unable to login; JSONDecodeError")
         self.auth_token = json["auth_token"]
         return json
+
     def fetch(self, bid):
         if not self.auth_token:
-            # Need to login
-            return False
+            raise SnaphaxAuthException("Unable to fetch image; not logged in")
         ts = self._time()
         post_data = {"id": bid,
                      "timestamp": ts,
@@ -68,22 +117,22 @@ class Snaphax(object):
         res = self.post("/ph/blob", post_data, self.auth_token, ts)
         raw = res.raw.data
         if self._is_html(raw):
-            return False
+            raise SnaphaxException("Unable to fetch image; recieved HTML response: \n" + raw)
         if self._is_valid_header(raw):
             return raw
         decoded = self._decrypt(raw)
-        print [hex(ord(t)) for t in decoded[0:2]]
+        self.log(hex_header=[hex(ord(t)) for t in decoded[0:2]])
         if self._is_valid_header(decoded):
             return decoded
         else:
-            return False
+            raise SnaphaxException("Unable to fetch image; unable to decode format")
 
         return res
     def upload(self, file_data, file_type, recipients, time=3):
-        if file_type not in (self.MEDIA_IMAGE, self.MEDIA_VIDEO):
-            raise Exception("Media type not defined")
+        if file_type not in (self.MEDIA_IMAGE, self.MEDIA_VIDEO, self.MEDIA_VIDEO_NOAUDIO):
+            raise SnaphaxException("Unable to upload; media type %d not defined" % file_type)
         if not self.auth_token:
-            return False
+            raise SnaphaxAuthException("Unable to upload; not logged in")
         ts = self._time()
         media_id = self.options["username"].upper() + str(ts)
         enc_file_data = self._encrypt(file_data)
@@ -93,19 +142,22 @@ class Snaphax(object):
                 "type": file_type,
                 "media_id": media_id }
         res = self.post("/ph/upload", data, self.auth_token, ts, files=files)
-        print res
-        print res.raw.data
+        self._log(http_response=res, http_response_data=res.raw.data)
+        if not res:
+            raise SnaphaxException("Unable to upload; /ph/upload returned error")
 
-        for recipient in recipients:
-            ts = self._time()
-            rdata = {"username": self.options["username"],
-                     "timestamp": ts,
-                     "recipient": recipient,
-                     "media_id": media_id,
-                     "time": time }
-            rres = self.post("/ph/send", rdata, self.auth_token, ts)
-            print rres
-            print "Sent to", recipient
+        ts = self._time()
+        rdata = {"username": self.options["username"],
+                 "timestamp": ts,
+                 "recipient": ", ".join(recipients),
+                 "media_id": media_id,
+                 "time": time }
+        rres = self.post("/ph/send", rdata, self.auth_token, ts)
+        self._log("Sent to %s" % recipients)
+        self._log(http_response=rres, http_response_data=rres.raw.data)
+        if not rres:
+            raise SnaphaxException("Unable to upload; /ph/send returned error")
+
     def post(self, endpoint, data, token, ts, files=None):
         headers = {"User-Agent": self.options["user_agent"] }
         url = self.options["url"] + endpoint
@@ -133,6 +185,15 @@ class Snaphax(object):
     def _encrypt(self, data):
         enc = AES.new(self.options["blob_enc_key"], AES.MODE_ECB)
         return enc.encrypt(data)
+    
+    def _log(self, *args, **kwargs):
+        log_str = " ".join(map(str, args))
+        if kwargs:
+            log_str += "\n" + "\n".join(["%s: %s" % i for i in kwargs.items()])
+        if self.debug:
+            print log_str
+        if self.logger:
+            logger.info(log_str)
 
 
 
