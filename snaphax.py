@@ -20,9 +20,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import time
-import requests
 import hashlib
+import json
+import requests
+import time
 from Crypto.Cipher import AES
 
 class SnaphaxException(Exception):
@@ -39,7 +40,7 @@ class Snaphax(object):
 		'secret' : 'iEk21fuwZApXlz93750dmW22pw389dPwOk',
 		'static_token' : 'm198sOkJEn37DjqZ32lpRu76xmw288xSQ9',
 		'url' : 'https://feelinsonice.appspot.com',
-		'user_agent' : 'Snaphax 4.0.1 (iPad; iPhone OS 6.0; en_US)',
+		'user_agent' : 'Snapchat/3.0.2 (Nexus 4; Android 18; gzip)',
         'username' : ''
     }
     STATUS_NONE = -1
@@ -90,29 +91,88 @@ class Snaphax(object):
         self.options = self.DEFAULT_OPTIONS.copy()
         self.options.update(kwargs)
         self.auth_token = None
+        self.added_friends_timestamp = 0
         self.logger = None
         self.debug = debug
+
+    def register(self, email, username, password, age=21, birthday="1992-11-11"):
+        ts = self._time()
+        post_data = {"email": email,
+                     "password": password,
+                     "age": int(age),
+                     "birthday": birthday }
+        out = self.post("/bq/register", post_data, self.options["static_token"], ts)
+        try:
+            json = out.json()
+        except ValueError:
+            print out.text
+            raise SnaphaxException("Unable to register; JSONDecodeError")
+        if not json["logged"]:
+            raise SnaphaxException(json["message"])
+        print "Snapchat phone number: ", json["snapchat_phone_number"]
+
+        ts = self._time()
+        post_data = {"email": email,
+                     "username": username}
+        out = self.post("/ph/registeru", post_data, self.options["static_token"], ts)
+        try:
+            json = out.json()
+        except ValueError:
+            print out.text
+            raise SnaphaxException("Unable to register; JSONDecodeError")
+        if not json["logged"]:
+            raise SnaphaxException(json["message"])
+        self.options["username"] = username
+        self.auth_token = json["auth_token"]
+        return username
 
     def login(self, username, password):
         ts = self._time()
         self.options["username"] = username
         post_data = {"username": username,
-                     "password": password,
-                     "timestamp": ts }
-        out = self.post("/ph/login", post_data, self.options["static_token"], ts);
+                     "password": password}
+        out = self.post("/ph/login", post_data, self.options["static_token"], ts)
         try:
             json = out.json()
-        except requests.JSONDecodeError:
+        except ValueError:
+            print out.text
             raise SnaphaxException("Unable to login; JSONDecodeError")
         self.auth_token = json["auth_token"]
+        self.added_friends_timestamp = json["added_friends_timestamp"]
         return json
+
+    def clear(self):
+        ts = self._time()
+        data = {"username": self.options["username"]}
+        res = self.post("/ph/clear", data, self.auth_token, ts)
+        print res
+
+    def update(self, snap_id, seen=0, replayed=0):
+        return self.bulk_update({
+                snap_id: {
+                    "c": seen,
+                    "t": self._time(),
+                    "replayed": replayed
+                }
+            }
+        )
+
+    def bulk_update(self, snap_data):
+        ts = self._time()
+        data = {
+            "username": self.options["username"],
+            "added_friends_timestamp": self.added_friends_timestamp,
+            "events": "[]",
+            "json": json.dumps(snap_data)
+        }
+        out = self.post("/bq/update_snaps", data, self.auth_token, ts)
+        out.raise_for_status()
 
     def fetch(self, bid):
         if not self.auth_token:
             raise SnaphaxAuthException("Unable to fetch image; not logged in")
         ts = self._time()
         post_data = {"id": bid,
-                     "timestamp": ts,
                      "username": self.options["username"] }
         res = self.post("/ph/blob", post_data, self.auth_token, ts)
         raw = res.raw.data
@@ -138,7 +198,6 @@ class Snaphax(object):
         enc_file_data = self._encrypt(file_data)
         files = {"data": ("file", enc_file_data)}
         data = {"username": self.options["username"],
-                "timestamp": ts,
                 "type": file_type,
                 "media_id": media_id }
         res = self.post("/ph/upload", data, self.auth_token, ts, files=files)
@@ -148,7 +207,6 @@ class Snaphax(object):
 
         ts = self._time()
         rdata = {"username": self.options["username"],
-                 "timestamp": ts,
                  "recipient": ", ".join(recipients),
                  "media_id": media_id,
                  "time": time }
@@ -158,11 +216,13 @@ class Snaphax(object):
         if not rres:
             raise SnaphaxException("Unable to upload; /ph/send returned error")
 
-    def post(self, endpoint, data, token, ts, files=None):
+    def post(self, endpoint, data, token, ts, files=None, add_timestamp=True):
         headers = {"User-Agent": self.options["user_agent"] }
         url = self.options["url"] + endpoint
         token = self._hash(token, ts)
         data["req_token"] = token
+        if add_timestamp:
+            data["timestamp"] = ts
         r = requests.post(url, data=data, headers=headers, stream=True, files=files)
         return r
     def _time(self):
