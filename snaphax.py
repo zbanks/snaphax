@@ -79,6 +79,14 @@ class Snaphax(object):
              FRIEND_REQ_VIDEO: "Friend Request (Video + audio)",
              FRIEND_REQ_VIDEO_NOAUDIO: "Friend Request (Video, no audio)" }
 
+    extension = {MEDIA_IMAGE: ".jpg",
+                 MEDIA_VIDEO: ".mpg",
+                 MEDIA_VIDEO_NOAUDIO: ".mpg",
+                 FRIEND_REQ: ".txt",
+                 FRIEND_REQ_IMAGE: ".jpg",
+                 FRIEND_REQ_VIDEO: ".mpg",
+                 FRIEND_REQ_VIDEO_NOAUDIO: ".mpg" }
+
     orientation = {PORTRAIT: "Portrait",
                    LANDSCAPE_LEFT: "Landscape (left)",
                    LANDSCAPE_RIGHT: "Landscape (right)" }
@@ -86,6 +94,7 @@ class Snaphax(object):
     friend = {FRIEND: "Friend",
               FRIEND_PENDING: "Pending",
               FRIEND_BLOCKED: "Blocked" }
+
 
     def __init__(self, debug=True, **kwargs):
         self.options = self.DEFAULT_OPTIONS.copy()
@@ -180,8 +189,11 @@ class Snaphax(object):
             raise SnaphaxException("Unable to fetch image; recieved HTML response: \n" + raw)
         if self._is_valid_header(raw):
             return raw
-        decoded = self._decrypt(raw)
-        self.log(hex_header=[hex(ord(t)) for t in decoded[0:2]])
+        try:
+            decoded = self._decrypt(raw)
+        except ValueError:
+            raise SnaphaxException("Unable to fetch image; image length not multiple of 16 (%d) [%s]" % (len(raw), raw))
+        self._log(hex_header=[hex(ord(t)) for t in decoded[0:2]])
         if self._is_valid_header(decoded):
             return decoded
         else:
@@ -240,6 +252,7 @@ class Snaphax(object):
     def _is_html(self, header):
         return header[0:2] == "<h"
     def _decrypt(self, data):
+        self._log("Dec length: %d", len(data))
         enc = AES.new(self.options["blob_enc_key"], AES.MODE_ECB)
         return enc.decrypt(data)
     def _encrypt(self, data):
