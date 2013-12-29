@@ -95,6 +95,11 @@ class Snaphax(object):
               FRIEND_PENDING: "Pending",
               FRIEND_BLOCKED: "Blocked" }
 
+    feature_settings = {"smart_filters": False,
+                        "visual_filters": False, 
+                        "special_text": False, 
+                        "replay_snaps": False,
+                        "front_facing_flash": False }
 
     def __init__(self, debug=True, **kwargs):
         self.options = self.DEFAULT_OPTIONS.copy()
@@ -227,6 +232,13 @@ class Snaphax(object):
         self._log(http_response=rres, http_response_data=rres.raw.data)
         if not rres:
             raise SnaphaxException("Unable to upload; /ph/send returned error")
+
+    def feature_settings(self, fs):
+        ts = self._time()
+        data = {"username": self.options["username"],
+                "settings": json.dumps(fs)}
+        res = self.pos("/bq/update_feature_settings", data, self.auth_token, ts)
+        res.raise_for_status()
 
     def post(self, endpoint, data, token, ts, files=None, add_timestamp=True):
         headers = {"User-Agent": self.options["user_agent"] }
